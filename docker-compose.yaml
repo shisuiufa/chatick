@@ -1,0 +1,91 @@
+services:
+  # Core backend service and web server entrypoint
+  laravel:
+    image: ${IMAGES_PREFIX:-chatick:}app-laravel
+    restart: unless-stopped
+    ports:
+      - ${HTTP_PORT:-80}:80
+      - ${HTTPS_PORT:-443}:443
+      - ${HTTP3_PORT:-443}:443/udp
+    depends_on:
+      - database
+      - redis
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      SPA_UPSTREAM: nuxt:3000
+      SERVER_NAME: ${SERVER_NAME:-localhost}, laravel:80
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      TRUSTED_HOSTS: ^${SERVER_NAME:-example\.com|localhost}|laravel$$
+
+  # Single page application frontend
+  nuxt:
+    image: ${IMAGES_PREFIX:-chatick:}app-nuxt
+    environment:
+      NUXT_PUBLIC_ENTRYPOINT: http://laravel
+
+  # Main application database
+  database:
+    image: postgres:16-alpine
+    environment:
+      PGUSER: ${DB_ROOT_USER:-postgres}
+      POSTGRES_DB: ${DB_DATABASE:-chatick}
+      POSTGRES_USER: ${DB_USERNAME:-app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    ports:
+      - ${DB_PORT:-5432}
+    volumes:
+      - db-data:/var/lib/postgresql
+      - ./api/database/levenshtein.sql:/docker-entrypoint-initdb.d/levenshtein.sql
+    env_file:
+      - path: ./api/.env
+        required: true
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "${DB_DATABASE:-chatickdb}", "-U", "${DB_USERNAME:-app}"]
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # Cache and queues service
+  redis:
+    image: redis:7-alpine
+    ports:
+      - ${REDIS_PORT:-6379}
+    volumes:
+      - redis-data:/data
+    env_file:
+      - path: ./api/.env
+        required: true
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  typesense:
+    image: typesense/typesense:26.0
+    restart: on-failure
+    volumes:
+      - typesense-data:/typesense-data
+      - ./api/docker/typesense-entrypoint.sh:/entrypoint.sh
+    environment:
+      TYPESENSE_DATA_DIR: ${TYPESENSE_DATA_DIR:-/typesense-data}
+      TYPESENSE_API_KEY: ${TYPESENSE_API_KEY:-ChangeMe}
+      TYPESENSE_ENABLE_CORS: ${TYPESENSE_ENABLE_CORS:-true}
+    env_file:
+      - path: ./api/.env
+        required: true
+    entrypoint: /entrypoint.sh
+    healthcheck:
+      test: curl --fail http://localhost:${TYPESENSE_PORT:-8108}/health || exit 1
+      retries: 5
+      timeout: 7s
+      start_period: 60s
+
+volumes:
+  caddy-data:
+  caddy-config:
+  db-data:
+  redis-data:
+  typesense-data:
